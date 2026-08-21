@@ -67,6 +67,8 @@ GMAIL_TOKEN_PATH = Path(
 # For hosting: paste the whole token.json contents into this variable instead
 # of shipping the file.
 GMAIL_TOKEN_JSON = os.getenv("GMAIL_TOKEN_JSON")
+# Recorded for reference only. Not passed when loading credentials, see
+# _gmail_credentials() for why.
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 INTERVAL_SECONDS = int(os.getenv("INTERVAL_SECONDS", "300"))
 STATE_DIR = Path(os.getenv("STATE_DIR", Path(__file__).parent))
@@ -263,15 +265,15 @@ def _gmail_credentials():
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
+    # Deliberately loaded WITHOUT an explicit scope list. This token file is
+    # shared with faq-bot, which needs gmail.readonly as well as gmail.send.
+    # Passing only our own scope would rewrite the file's scope list narrower
+    # on write-back and break faq-bot's reply checking.
     from_file = False
     if GMAIL_TOKEN_JSON:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(GMAIL_TOKEN_JSON), GMAIL_SCOPES
-        )
+        creds = Credentials.from_authorized_user_info(json.loads(GMAIL_TOKEN_JSON))
     elif GMAIL_TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(
-            str(GMAIL_TOKEN_PATH), GMAIL_SCOPES
-        )
+        creds = Credentials.from_authorized_user_file(str(GMAIL_TOKEN_PATH))
         from_file = True
     else:
         log("  ERROR: no Gmail token. Copy token.json here, or set GMAIL_TOKEN_JSON.")
