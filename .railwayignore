@@ -1,0 +1,8 @@
+# Never upload secrets or local state. Config comes from Railway variables,
+# and seen.json lives on the mounted volume at /data.
+.env
+token.json
+credentials.json
+seen.json
+__pycache__/
+.git/
