@@ -37,9 +37,24 @@ load_dotenv()
 # --------------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------------
+# "gmail" (default) or "sendgrid". Gmail needs no third party service and is
+# independent of the business email infrastructure.
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "gmail").strip().lower()
+
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", SENDER_EMAIL)
+
+# Gmail auth. token.json already contains client_id, client_secret and the
+# refresh token, so credentials.json is not needed and the interactive OAuth
+# flow is never run. A server has no browser to complete it with.
+GMAIL_TOKEN_PATH = Path(
+    os.getenv("GMAIL_TOKEN_PATH", Path(__file__).parent / "token.json")
+)
+# For hosting: paste the whole token.json contents into this variable instead
+# of shipping the file.
+GMAIL_TOKEN_JSON = os.getenv("GMAIL_TOKEN_JSON")
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 INTERVAL_SECONDS = int(os.getenv("INTERVAL_SECONDS", "300"))
 STATE_DIR = Path(os.getenv("STATE_DIR", Path(__file__).parent))
 STATE_FILE = STATE_DIR / "seen.json"
@@ -226,9 +241,82 @@ def gather_items():
 # --------------------------------------------------------------------
 # EMAIL
 # --------------------------------------------------------------------
-def send_email(subject, html_body):
+def _gmail_credentials():
+    """Load Gmail credentials, refreshing if needed. Returns None on failure.
+
+    Deliberately never falls back to the interactive OAuth flow: this runs
+    headless, so a browser prompt would just hang forever.
+    """
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    from_file = False
+    if GMAIL_TOKEN_JSON:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(GMAIL_TOKEN_JSON), GMAIL_SCOPES
+        )
+    elif GMAIL_TOKEN_PATH.exists():
+        creds = Credentials.from_authorized_user_file(
+            str(GMAIL_TOKEN_PATH), GMAIL_SCOPES
+        )
+        from_file = True
+    else:
+        log("  ERROR: no Gmail token. Copy token.json here, or set GMAIL_TOKEN_JSON.")
+        return None
+
+    if creds.valid:
+        return creds
+
+    if not (creds.expired and creds.refresh_token):
+        log("  ERROR: Gmail token is invalid and cannot be refreshed. Re-auth needed.")
+        return None
+
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        log("  ERROR: Gmail token refresh failed: {}".format(e))
+        log("  Re-run the faq-bot OAuth flow to mint a fresh token.json.")
+        return None
+
+    # Persist the refreshed token so the next run starts valid.
+    if from_file:
+        try:
+            GMAIL_TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        except OSError as e:
+            log("  note: could not write refreshed token back: {}".format(e))
+
+    return creds
+
+
+def send_via_gmail(subject, html_body):
+    import base64
+    from email.mime.text import MIMEText
+    from googleapiclient.discovery import build
+
+    creds = _gmail_credentials()
+    if not creds:
+        return False
+
+    msg = MIMEText(html_body, "html")
+    msg["Subject"] = subject
+    msg["To"] = ALERT_EMAIL
+    if SENDER_EMAIL:
+        msg["From"] = SENDER_EMAIL
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        log("  email sent to {} via Gmail".format(ALERT_EMAIL))
+        return True
+    except Exception as e:
+        log("  email FAILED (gmail): {}".format(e))
+        return False
+
+
+def send_via_sendgrid(subject, html_body):
     if not SENDGRID_API_KEY or not SENDER_EMAIL:
-        log("ERROR: SENDGRID_API_KEY and SENDER_EMAIL must be set in .env")
+        log("  ERROR: SENDGRID_API_KEY and SENDER_EMAIL must be set in .env")
         return False
 
     import sendgrid
@@ -243,11 +331,21 @@ def send_email(subject, html_body):
     try:
         sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
         resp = sg.send(message)
-        log("  email sent to {} (status {})".format(ALERT_EMAIL, resp.status_code))
+        log("  email sent to {} via SendGrid (status {})".format(
+            ALERT_EMAIL, resp.status_code))
         return True
     except Exception as e:
-        log("  email FAILED: {}".format(e))
+        log("  email FAILED (sendgrid): {}".format(e))
         return False
+
+
+def send_email(subject, html_body):
+    if not ALERT_EMAIL:
+        log("  ERROR: set ALERT_EMAIL (or SENDER_EMAIL) in .env")
+        return False
+    if EMAIL_BACKEND == "sendgrid":
+        return send_via_sendgrid(subject, html_body)
+    return send_via_gmail(subject, html_body)
 
 
 def alert(item, reason):

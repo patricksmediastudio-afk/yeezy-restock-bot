@@ -1,3 +1,7 @@
 .env
 seen.json
 __pycache__/
+
+# OAuth credentials. Never commit these.
+token.json
+credentials.json
