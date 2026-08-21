@@ -1,0 +1,59 @@
+name: Yeezy restock watch
+
+on:
+  schedule:
+    # Every 5 minutes. This is GitHub's minimum interval, and it is
+    # best effort: runs get delayed or skipped when the platform is busy.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Never let two checks overlap. Two runs racing would both read the same
+# seen.json and could send the same alert twice, or clash on the push.
+concurrency:
+  group: restock-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for a restock
+        env:
+          EMAIL_BACKEND: smtp
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          # State lives in a tracked directory so it survives between runs.
+          # Each run is a fresh machine, so anything not committed is lost.
+          STATE_DIR: state
+        run: python restock_bot.py --once
+
+      - name: Persist seen state
+        run: |
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/seen.json
+            git commit -m "chore: update seen state [skip ci]"
+            # Another run may have pushed while this one was working.
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            git push
+          else
+            echo "No state change, nothing to commit."
+          fi

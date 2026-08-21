@@ -1,6 +1,11 @@
 .env
-seen.json
 __pycache__/
+
+# Local run state. The CI copy under state/ IS tracked, since each GitHub
+# Actions run starts on a fresh machine and would otherwise re-prime every
+# time and never alert.
+seen.json
+!state/seen.json
 
 # OAuth credentials. Never commit these.
 token.json

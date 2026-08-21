@@ -1,105 +1,99 @@
-# Deploying to Railway
+# Deploying
 
-Everything in this folder is ready. What's left needs your Railway account,
-so it's yours to run. Should take about five minutes.
+The bot needs to run when your computer does not. The chosen path is GitHub
+Actions, which is free. Railway instructions are kept at the bottom as an
+alternative.
 
-## Before you start
+## GitHub Actions (current setup)
 
-Run the email test locally if you haven't. If email is broken, a deployed bot
-is a bot that silently does nothing:
+`.github/workflows/restock.yml` runs `restock_bot.py --once` on a `*/5` cron.
 
-```
-C:\Users\patri\AppData\Local\Python\pythoncore-3.14-64\python.exe restock_bot.py --test
-```
+### 1. The repo must be public
 
-## 1. Install the Railway CLI
+This is the part that decides whether it is free. Public repos get unlimited
+Actions minutes. Private repos get 2000 minutes a month, and this bot runs
+288 times a day, so a private repo would burn through that in about a week
+and then stop.
 
-It isn't on this machine yet.
+Nothing sensitive is in the repo. Credentials live in GitHub Secrets, and
+`.env`, `token.json` and `credentials.json` are all gitignored.
 
-```
-npm i -g @railway/cli
-```
-
-## 2. Log in and create the project
+### 2. Create the repo and push
 
 ```
-cd C:\Users\patri\Documents\restock-bot
-railway login
+gh repo create yeezy-restock-bot --public --source . --push
+```
+
+Or create it in the GitHub web UI and push manually.
+
+### 3. Add the secrets
+
+Repo Settings > Secrets and variables > Actions > New repository secret.
+Four of them:
+
+| Secret | Value |
+|---|---|
+| `SMTP_USER` | patricksmediastudio@gmail.com |
+| `SMTP_PASSWORD` | your 16 character Google app password |
+| `SENDER_EMAIL` | patricksmediastudio@gmail.com |
+| `ALERT_EMAIL` | patricksmediastudio@gmail.com |
+
+Or from the CLI:
+
+```
+gh secret set SMTP_PASSWORD
+```
+
+### 4. Trigger a run to confirm it works
+
+Actions tab > "Yeezy restock watch" > Run workflow. Do not wait for the cron
+to prove it works.
+
+The first run primes `state/seen.json` with everything already published and
+sends nothing. That is correct behaviour, not a failure. From then on it only
+alerts on new items.
+
+### How state survives
+
+Each Actions run is a fresh machine, so anything not committed is lost. The
+workflow sets `STATE_DIR=state` and commits `state/seen.json` back to the repo
+after each run. Without that the bot would re-prime every single run, treat
+everything current as already seen, and never alert. It would look perfectly
+healthy in the logs while catching nothing.
+
+That commit also keeps the repo active. GitHub disables scheduled workflows on
+public repos after 60 days of inactivity, and these commits reset that clock.
+
+### The real tradeoff
+
+GitHub's scheduler is best effort. Scheduled runs are frequently delayed, and
+under heavy platform load they can be skipped entirely. Expect 5 minutes
+typically and occasionally 15 to 30.
+
+For this bot that is acceptable, because the latency is dominated by how long
+it takes a sneaker site to publish the news, not by how often we poll. It
+would be a bad tradeoff for a bot watching a live stock endpoint. It is a
+reasonable one for a bot watching news.
+
+If a restock is announced and you want minute-accurate alerting, run the bot
+locally at the same time. Both can run at once, and they keep separate state,
+so the only cost is a duplicate email.
+
+## Railway (alternative, needs a paid plan)
+
+The trial on workspace `patricksmediastudio-afk` expired on 2026-08-21, so
+this needs the Hobby plan (~$5/mo). `railway.json`, `Procfile` and
+`.railwayignore` are all still configured.
+
+```
 railway init
-```
-
-Name it something like `yeezy-restock-bot`.
-
-## 3. Set the environment variables
-
-Do NOT upload `.env`. It is gitignored and should stay local. Set the values
-in Railway instead:
-
-```
-railway variables --set EMAIL_BACKEND=smtp
-railway variables --set SMTP_USER=patricksmediastudio@gmail.com
-railway variables --set SMTP_PASSWORD=your_16_char_app_password
-railway variables --set SENDER_EMAIL=patricksmediastudio@gmail.com
-railway variables --set ALERT_EMAIL=patricksmediastudio@gmail.com
-railway variables --set INTERVAL_SECONDS=300
-railway variables --set STATE_DIR=/data
-```
-
-The app password is what makes this deployable. OAuth tokens are a poor fit
-for hosting: the refresh token can be revoked, the interactive flow needs a
-browser the server does not have, and a refreshed token has to be written
-somewhere persistent. An app password has none of those problems.
-
-If you do use `EMAIL_BACKEND=gmail` instead, do not ship `token.json`. Paste
-its contents into a single `GMAIL_TOKEN_JSON` variable, which the code
-already supports.
-
-## 4. Add the volume, this is the step people skip
-
-In the Railway dashboard, open the service, go to **Variables and Volumes**,
-and mount a volume at `/data`.
-
-This is what `STATE_DIR=/data` points at. Without it, `seen.json` lives on
-ephemeral disk and is wiped on every redeploy and restart. The bot would then
-re-prime from scratch, treat the current articles as already seen, and you
-would miss anything posted during that window. The volume is the difference
-between a bot that works and a bot that looks like it works.
-
-## 5. Deploy
-
-```
 railway up
+railway variables --set "EMAIL_BACKEND=smtp" --set "SMTP_USER=..." --set "SMTP_PASSWORD=..." --set "SENDER_EMAIL=..." --set "ALERT_EMAIL=..." --set "INTERVAL_SECONDS=300" --set "STATE_DIR=/data"
 ```
 
-## 6. Confirm it's alive
+Then mount a volume at `/data` in the dashboard, and `railway up` again.
+The volume is what makes `STATE_DIR=/data` persist across redeploys.
 
-```
-railway logs
-```
-
-You want to see, roughly every five minutes:
-
-```
-[timestamp] Checking sources...
-[timestamp]   39 items gathered, 39 already seen
-[timestamp] Check complete. 0 new alert(s) sent.
-```
-
-`0 new alerts` is the healthy state. It means the bot is running and there is
-simply no restock news yet. You will know it fired when the email arrives.
-
-## Alternative: deploy from GitHub
-
-If you would rather not use the CLI, push this folder to its own private
-GitHub repo and connect it in the Railway dashboard. It already has its own
-git repo, separate from your home directory. Steps 3 and 4 still apply.
-
-## A warning about your home directory
-
-`C:\Users\patri` is itself a git repository. That is almost certainly not
-intentional. If anything ever runs `git add -A && git push` in your home
-folder, it would publish `.claude.json`, `credentials.json`, `token.json`,
-and every `.env` on the machine, including your SendGrid and Anthropic keys.
-
-This folder now has its own repo so deploying it cannot drag the rest along.
-Worth looking at the home directory repo separately when you have a moment.
+Railway gives exact 5 minute timing and no scheduler drift. If you ever pay
+for it to bring the Zeffirelli chatbot back online, moving this bot there too
+costs nothing extra.
