@@ -37,9 +37,22 @@ load_dotenv()
 # --------------------------------------------------------------------
 # CONFIG
 # --------------------------------------------------------------------
-# "gmail" (default) or "sendgrid". Gmail needs no third party service and is
-# independent of the business email infrastructure.
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "gmail").strip().lower()
+# "smtp" (default), "gmail", or "sendgrid".
+#
+# smtp is the default on purpose. A Google app password does not expire, so
+# an unattended bot keeps working. Gmail OAuth refresh tokens get revoked
+# (and expire after 7 days if the consent screen is still in Testing mode),
+# which silently kills a 24/7 watcher exactly when you need it.
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "smtp").strip().lower()
+
+# --- SMTP backend ---
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+# Google displays app passwords as "abcd efgh ijkl mnop". The spaces are
+# presentational, so strip them rather than making a failed login look like
+# a wrong password.
+SMTP_PASSWORD = (os.getenv("SMTP_PASSWORD") or "").replace(" ", "").strip() or None
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
@@ -339,13 +352,56 @@ def send_via_sendgrid(subject, html_body):
         return False
 
 
+def send_via_smtp(subject, html_body):
+    import smtplib
+    from email.mime.text import MIMEText
+
+    if not SMTP_USER or not SMTP_PASSWORD:
+        log("  ERROR: set SMTP_USER and SMTP_PASSWORD in .env")
+        log("  For Gmail, SMTP_PASSWORD is an app password, not your login password.")
+        log("  Create one at https://myaccount.google.com/apppasswords")
+        return False
+
+    msg = MIMEText(html_body, "html")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL or SMTP_USER
+    msg["To"] = ALERT_EMAIL
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        log("  email sent to {} via SMTP".format(ALERT_EMAIL))
+        return True
+    except smtplib.SMTPAuthenticationError:
+        log("  email FAILED (smtp): authentication rejected.")
+        log("  Gmail requires an app password here, and 2FA must be on.")
+        return False
+    except Exception as e:
+        log("  email FAILED (smtp): {}".format(e))
+        return False
+
+
+BACKENDS = {
+    "smtp": send_via_smtp,
+    "gmail": send_via_gmail,
+    "sendgrid": send_via_sendgrid,
+}
+
+
 def send_email(subject, html_body):
     if not ALERT_EMAIL:
         log("  ERROR: set ALERT_EMAIL (or SENDER_EMAIL) in .env")
         return False
-    if EMAIL_BACKEND == "sendgrid":
-        return send_via_sendgrid(subject, html_body)
-    return send_via_gmail(subject, html_body)
+
+    backend = BACKENDS.get(EMAIL_BACKEND)
+    if not backend:
+        log("  ERROR: unknown EMAIL_BACKEND '{}'. Use one of: {}".format(
+            EMAIL_BACKEND, ", ".join(sorted(BACKENDS))))
+        return False
+
+    return backend(subject, html_body)
 
 
 def alert(item, reason):
