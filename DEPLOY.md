@@ -36,16 +36,23 @@ Do NOT upload `.env`. It is gitignored and should stay local. Set the values
 in Railway instead:
 
 ```
-railway variables --set SENDGRID_API_KEY=your_mail_send_only_key
-railway variables --set SENDER_EMAIL=your_verified_sender
+railway variables --set EMAIL_BACKEND=smtp
+railway variables --set SMTP_USER=patricksmediastudio@gmail.com
+railway variables --set SMTP_PASSWORD=your_16_char_app_password
+railway variables --set SENDER_EMAIL=patricksmediastudio@gmail.com
 railway variables --set ALERT_EMAIL=patricksmediastudio@gmail.com
 railway variables --set INTERVAL_SECONDS=300
 railway variables --set STATE_DIR=/data
 ```
 
-Use a **Mail Send only** SendGrid key here, not the one your faq-bot outreach
-uses. If this bot ever misbehaves or the key leaks, your business sending
-should not go down with it.
+The app password is what makes this deployable. OAuth tokens are a poor fit
+for hosting: the refresh token can be revoked, the interactive flow needs a
+browser the server does not have, and a refreshed token has to be written
+somewhere persistent. An app password has none of those problems.
+
+If you do use `EMAIL_BACKEND=gmail` instead, do not ship `token.json`. Paste
+its contents into a single `GMAIL_TOKEN_JSON` variable, which the code
+already supports.
 
 ## 4. Add the volume, this is the step people skip
 

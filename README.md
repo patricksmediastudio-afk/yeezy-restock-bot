@@ -52,8 +52,18 @@ are both correctly ignored. Alerts mentioning JD or Finish Line are labelled
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill it in. `SENDGRID_API_KEY` and
-`SENDER_EMAIL` are the same values as your faq-bot `.env`.
+Copy `.env.example` to `.env` and fill it in.
+
+The default sender is `EMAIL_BACKEND=smtp`, which needs a Google **app
+password** in `SMTP_PASSWORD`. Create one at
+https://myaccount.google.com/apppasswords (2FA must be on). It is a 16
+character string, and the spaces Google shows are presentational.
+
+App passwords are used deliberately instead of OAuth. They do not expire,
+so an unattended bot keeps running. Gmail OAuth refresh tokens get revoked,
+and expire after 7 days while the consent screen is in Testing mode, which
+kills a 24/7 watcher silently. `EMAIL_BACKEND=gmail` and `=sendgrid` are
+still available if you want them.
 
 Verify email works before trusting it:
 
