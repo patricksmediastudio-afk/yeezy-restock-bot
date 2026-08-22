@@ -173,6 +173,58 @@ def test_subject_lines(failures):
         rb.send_email = real_send
 
 
+def test_summary_cannot_trigger_an_alert(failures):
+    """The subject test reads the title only. Summaries name other products.
+
+    This is the real YeezyFan hoodie item. Its description genuinely contains
+    the adjacent words "Yeezy YS-01 Slides", so no proximity rule saves you.
+    The article is about a hoodie, and only the headline says so.
+    """
+    hoodie_summary = (
+        "The Yeezy Hoodie SZNX HD-10 is easily one of the most popular items "
+        "on yeezy.com, alongside the Yeezy YS-01 Slides and the Yeezy PK-01 "
+        "Parka. But at just $40, everyone is calling it the new essential."
+    )
+    must_not = [
+        ("Yeezy SZNX HD-10 Sizing Guide: How Does This Hoodie Actually Fit?",
+         hoodie_summary),
+        ("This Weekend's Hottest Sneaker Releases (And Where to Find Them)",
+         "Nike, New Balance and the Yeezy YS-01 Slide restock at JD Sports."),
+        ("Yeezy 800 New Colorways",
+         "Three new looks. Elsewhere the Yeezy Slides restock at retail."),
+    ]
+    for title, summary in must_not:
+        ok, reason = rb.score_item(title, summary)
+        check(failures, not ok,
+              "summary triggered an alert for {!r} (reason {!r})".format(title, reason))
+
+
+def test_summary_still_feeds_the_tier(failures):
+    """Once the title qualifies, the summary can still upgrade the tier."""
+    ok, reason = rb.score_item(
+        "A New Yeezy Slide Colorway",
+        "The YS-01 is restocking at JD Sports on Friday.")
+    check(failures, ok, "title-qualified item should fire")
+    check(failures, "RESTOCK" in reason,
+          "summary should have upgraded the tier, got {!r}".format(reason))
+    check(failures, "JD SPORTS" in reason,
+          "summary should have supplied the JD label, got {!r}".format(reason))
+
+
+def test_proximity(failures):
+    """Within the title, the words must be talking about each other."""
+    for title in [
+        "Yeezy Slides Restock At JD",
+        "Where To Buy The Yeezy YS-01",
+        "New Colorway Of The Yeezy Slide",
+        "Slides From Yeezy Are Back In Stock",
+        "YZY Slides Drop Friday",
+        "A Closer Look At The YZY SL-01 aka Yeezy Slides",
+    ]:
+        ok, _ = rb.score_item(title)
+        check(failures, ok, "proximity rule wrongly blocked: {!r}".format(title))
+
+
 def main():
     failures = []
     tests = [
@@ -184,6 +236,9 @@ def main():
         test_seen_state_trims_oldest_first,
         test_seen_membership,
         test_subject_lines,
+        test_proximity,
+        test_summary_cannot_trigger_an_alert,
+        test_summary_still_feeds_the_tier,
     ]
     for test in tests:
         before = len(failures)

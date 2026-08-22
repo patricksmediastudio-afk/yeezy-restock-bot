@@ -78,18 +78,43 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
-TIMEOUT = 25
+# 10 sources per check, so keep this well under INTERVAL_SECONDS even if
+# every single one hangs: 10 x 15s is 150s against a 300s interval.
+TIMEOUT = 15
 
 # The JD product page, included in the alert email for convenience.
 JD_PRODUCT_URL = (
     "https://www.jdsports.com/pdp/yeezy-ys-01-slide-sandals/prod30231081/YS015/400"
 )
 
-# RSS feeds. Verified to return 200 to scripts.
+# RSS feeds. Every one verified to return 200 to scripts and to parse as RSS.
+#
+# Tag feeds first, and they matter more than they look. SneakerNews' main feed
+# holds only about 7 items, so a Yeezy slide post gets pushed out by unrelated
+# Nike news within hours. If the bot is not looking during that window, the
+# article is gone from the feed forever. A tag feed only rotates when there is
+# new Yeezy content, so the same post stays visible for days. That is the
+# difference between catching a drop and never seeing it.
 RSS_SOURCES = [
+    # Topic-scoped: highest signal, longest retention.
+    ("SneakerNews Yeezy Slides", "https://sneakernews.com/tag/yeezy-slides/feed/"),
+    ("Sneaker Bar Detroit Yeezy", "https://sneakerbardetroit.com/tag/yeezy/feed/"),
+    ("YeezyFan", "https://yeezyfan.com/feed/"),
+
+    # Whole-site feeds: lower signal, but they break news the tag feeds and
+    # Soleretriever can lag on.
     ("SneakerNews", "https://sneakernews.com/feed/"),
     ("Sneaker Bar Detroit", "https://sneakerbardetroit.com/feed/"),
+    ("Hypebeast Footwear", "https://hypebeast.com/footwear/feed"),
+    ("Sneaker Freaker", "https://www.sneakerfreaker.com/rss.xml"),
+    ("Nice Kicks", "https://www.nicekicks.com/feed/"),
+    ("Sneaker Files", "https://www.sneakerfiles.com/feed/"),
 ]
+
+# Checked and deliberately not included: KicksOnFire and Soleretriever's
+# homepage both 403 scripts, House of Heat publishes no RSS feed at any of the
+# usual paths, and Modern Notoriety returns an HTML page for every feed URL it
+# advertises.
 
 # Soleretriever. Their homepage sits behind Cloudflare and 403s scripts, but
 # their sitemap is published in robots.txt and serves a clean 200. It is also
@@ -116,9 +141,44 @@ SOLERETRIEVER_MAX_AGE_DAYS = 21
 #
 # Stock language still matters, but as a priority label in the subject line
 # rather than as a filter. See test_matching.py for the worked corpus.
-RE_YEEZY = re.compile(r"\byeezy\b|\bys-?01\b", re.I)
+RE_YEEZY = re.compile(r"\byeezy\b|\byzy\b|\bys-?01\b", re.I)
 RE_SLIDE = re.compile(r"\bslides?\b|\bys-?01\b", re.I)
 RE_JD = re.compile(r"\bjd\b|jd sports|finish ?line", re.I)
+
+# The model code is unambiguous on its own: YS-01 *is* the slide.
+RE_MODEL = re.compile(r"\bys-?01\b", re.I)
+
+# Otherwise "yeezy" and "slide" have to be talking about each other, within a
+# few words, rather than merely appearing in the same blob of text.
+RE_NEAR = re.compile(
+    r"yeezy\W+(?:\w+\W+){0,4}slides?|slides?\W+(?:\w+\W+){0,4}yeezy"
+    r"|yzy\W+(?:\w+\W+){0,4}slides?|slides?\W+(?:\w+\W+){0,4}yzy",
+    re.I,
+)
+
+
+def mentions_yeezy_slide(text):
+    """True if the text is about a Yeezy slide, not merely near the words."""
+    if RE_MODEL.search(text):
+        return True
+    return bool(RE_NEAR.search(text))
+
+
+# The subject test runs on the TITLE ONLY, and that is load bearing.
+#
+# RSS descriptions name other products constantly. YeezyFan's hoodie sizing
+# guide opens "The Yeezy Hoodie SZNX HD-10 is one of the most popular items
+# on yeezy.com, alongside the Yeezy YS-01 Slides and the Yeezy PK-01 Parka".
+# Every subject rule that reads the summary alerts on that, including a
+# proximity rule, because "Yeezy YS-01 Slides" really is in there. The words
+# are adjacent; the article is about a hoodie.
+#
+# A headline is written about what the article is about. That makes it the
+# only trustworthy subject signal in a feed item.
+#
+# The cost: an article whose headline avoids both words entirely, something
+# like "Where To Buy Ye's New Sandals", is missed. Summaries still feed the
+# tier and the JD label, so nothing else is lost.
 
 # Highest confidence: the item says stock is coming back.
 RE_RESTOCK = re.compile(
@@ -140,16 +200,16 @@ RE_AVAILABILITY = re.compile(
 def score_item(title, summary=""):
     """Return (should_alert, reason).
 
-    Alerts on any Yeezy slide item. The reason string carries the triage
-    signal: RESTOCK is the one to open first, JD SPORTS says it names the
-    retailer Patrick is actually buying from.
+    Alerts on any Yeezy slide item, judged by its headline. The reason string
+    carries the triage signal: RESTOCK is the one to open first, JD SPORTS
+    says it names the retailer Patrick is actually buying from.
     """
-    text = "{} {}".format(title, summary)
-    if not RE_YEEZY.search(text):
-        return False, ""
-    if not RE_SLIDE.search(text):
+    if not mentions_yeezy_slide(title):
         return False, ""
 
+    # Tier and retailer can safely read the summary: by this point the item is
+    # already established as a Yeezy slide article.
+    text = "{} {}".format(title, summary)
     if RE_RESTOCK.search(text):
         tier = "RESTOCK"
     elif RE_AVAILABILITY.search(text):

@@ -26,21 +26,54 @@ restock news, in practice, before the product page flips to in stock.
 
 ## Sources
 
-| Source | Endpoint | Notes |
-|---|---|---|
-| SneakerNews | `/feed/` | RSS, ~7 recent posts |
-| Sneaker Bar Detroit | `/feed/` | RSS, ~25 recent posts |
-| Soleretriever | `sitemap.xml` -> newest `sitemap-news/N` | Published in their robots.txt. Every entry carries a `lastmod`, so a re-edited restock post counts as a new signal. |
+Ten of them, all verified to serve scripts a clean 200 and to parse.
 
-Soleretriever's homepage 403s scripts via Cloudflare, but their sitemap is
-explicitly advertised in `robots.txt` and returns 200. Their `robots.txt`
-disallows `/collections` and `/api`, which this bot never touches.
+**Topic-scoped feeds.** These matter more than they look:
+
+| Source | Endpoint |
+|---|---|
+| SneakerNews Yeezy Slides | `/tag/yeezy-slides/feed/` |
+| Sneaker Bar Detroit Yeezy | `/tag/yeezy/feed/` |
+| YeezyFan | `/feed/` (Yeezy-only site) |
+
+SneakerNews' main feed holds about **7 items**. On a busy news day a Yeezy
+slide post is pushed out by unrelated Nike releases within hours, and once it
+is gone from the feed the bot can never see it. A tag feed only rotates when
+there is new Yeezy content, so the same post stays visible for days. With the
+old 30 minute polling gaps this was a live risk, not a theoretical one.
+
+**Whole-site feeds.** Lower signal, but they break news the tag feeds and
+Soleretriever can lag on: SneakerNews, Sneaker Bar Detroit, Hypebeast
+Footwear, Sneaker Freaker (`/rss.xml`), Nice Kicks, Sneaker Files.
+
+**Soleretriever**, via `sitemap.xml` -> the highest numbered `sitemap-news/N`.
+Their homepage 403s scripts via Cloudflare, but the sitemap is explicitly
+advertised in `robots.txt` and returns 200. Their `robots.txt` disallows
+`/collections` and `/api`, which this bot never touches. Every entry carries a
+`lastmod`, which goes into the dedup key, so a restock post that gets edited
+when the drop goes live counts as a fresh signal. That is the single most
+likely way this bot catches the online drop.
+
+**Checked and deliberately excluded:** KicksOnFire and Soleretriever's
+homepage 403 scripts. House of Heat publishes no RSS at any usual path.
+Modern Notoriety returns an HTML page for every feed URL it advertises.
 
 ## Match rule
 
-An item alerts if it mentions **Yeezy** *and* **slides**. That is the whole
-gate. "Nike Dunk Restock" and "Yeezy 700 Release Date" are both correctly
-ignored, because neither is a Yeezy slide.
+An item alerts if its **headline** is about a Yeezy slide. "Nike Dunk Restock"
+and "Yeezy 700 Release Date" are both correctly ignored, because neither is a
+Yeezy slide.
+
+Two details do the work. The words have to be talking about each other rather
+than merely co-occurring, and the test reads the **title only**.
+
+The title-only rule is not fussiness. YeezyFan's hoodie sizing guide opens
+"The Yeezy Hoodie SZNX HD-10 is one of the most popular items on yeezy.com,
+alongside the Yeezy YS-01 Slides and the Yeezy PK-01 Parka." Any rule that
+reads the summary alerts on that, proximity included, because "Yeezy YS-01
+Slides" genuinely is in there. The article is about a hoodie, and only the
+headline says so. Summaries still supply the tier and the JD label, so the
+only thing given up is an article whose headline avoids both words entirely.
 
 The rule used to also require stock language, and that was a mistake. This
 watcher exists for a one-shot event: a false negative costs the shoes, a
