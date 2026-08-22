@@ -120,11 +120,15 @@ python restock_bot.py --no-prime   # alert on existing articles too
 
 ## Deploying 24/7
 
-It is already deployed. **GitHub Actions** runs
-`restock_bot.py --once` on a `*/5` cron, and commits `state/seen.json` back to
-the repo so state survives between runs. Full detail, including why the repo
-has to be public and why that state commit is load bearing, is in
-[DEPLOY.md](DEPLOY.md).
+It is already deployed. **GitHub Actions** starts one job an hour that runs
+the watch loop for 50 minutes, checking every 5, then commits
+`state/seen.json` back to the repo so state survives to the next hour.
+
+It is hourly rather than `*/5` because a `*/5` cron measurably did not work:
+GitHub delivered 68 of a possible 415 runs, a 30 minute median between checks
+and a 91 minute worst case. A job that is already running cannot be skipped,
+so the polling happens on the runner's clock instead of GitHub's scheduler.
+Full detail, including what it costs, is in [DEPLOY.md](DEPLOY.md).
 
 Railway is kept as a fallback (`railway.json`, `Procfile`, `.railwayignore`
 are all still configured) but the trial expired, so it now needs a paid plan.

@@ -2,9 +2,16 @@ name: Yeezy restock watch
 
 on:
   schedule:
-    # Every 5 minutes. This is GitHub's minimum interval, and it is
-    # best effort: runs get delayed or skipped when the platform is busy.
-    - cron: "*/5 * * * *"
+    # Hourly, not */5. Measured over 36 hours, a */5 cron on this repo
+    # delivered 68 of a possible 415 runs: median 30 minutes between checks,
+    # worst case 91. GitHub's scheduler is best effort and it deprioritises
+    # high frequency schedules.
+    #
+    # So stop asking the scheduler for favours 288 times a day. Ask once an
+    # hour, and let the job itself stay alive and do the 5 minute polling on
+    # the runner's own clock. GitHub can delay starting a job, but it cannot
+    # interrupt one that is already running.
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -27,7 +34,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 58
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +52,16 @@ jobs:
       - name: Run tests
         run: python test_matching.py
 
-      - name: Check for a restock
+      # Runs the bot's normal watch loop for 50 minutes, checking every 5,
+      # then exits so the state file can be committed before the next hour's
+      # job takes over. 50 rather than 55 leaves slack: if GitHub starts this
+      # job late, it still finishes before the next trigger and the two do
+      # not queue up behind the concurrency group.
+      #
+      # Alerts email the instant they are found, mid-run. The state commit at
+      # the end is only for dedup, so a crashed job costs at most a duplicate
+      # email, never a missed one.
+      - name: Watch for a restock
         if: inputs.mode != 'test-email'
         env:
           EMAIL_BACKEND: smtp
@@ -53,10 +69,23 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          INTERVAL_SECONDS: "300"
           # State lives in a tracked directory so it survives between runs.
           # Each run is a fresh machine, so anything not committed is lost.
           STATE_DIR: state
-        run: python restock_bot.py --once
+        run: |
+          set +e
+          timeout 3000 python restock_bot.py
+          code=$?
+          set -e
+          # 124 is timeout doing its job, which is the normal way this ends.
+          # Anything else non-zero is a real crash and should fail loudly
+          # rather than leave a dead watcher looking healthy.
+          if [ "$code" -ne 124 ] && [ "$code" -ne 0 ]; then
+            echo "restock_bot exited $code"
+            exit "$code"
+          fi
+          echo "Watch window complete."
 
       # The sender is the one part the scheduled run never exercises: state
       # commits happen whether or not email works, and alerts only fire on a

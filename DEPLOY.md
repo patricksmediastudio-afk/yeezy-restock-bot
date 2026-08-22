@@ -6,7 +6,9 @@ alternative.
 
 ## GitHub Actions (current setup)
 
-`.github/workflows/restock.yml` runs `restock_bot.py --once` on a `*/5` cron.
+`.github/workflows/restock.yml` starts one job an hour that watches for 50
+minutes, checking every 5. See "Why hourly and not every 5 minutes" below,
+which is the least obvious decision in this repo.
 
 ### 1. The repo must be public
 
@@ -64,20 +66,67 @@ healthy in the logs while catching nothing.
 That commit also keeps the repo active. GitHub disables scheduled workflows on
 public repos after 60 days of inactivity, and these commits reset that clock.
 
-### The real tradeoff
+### Why hourly and not every 5 minutes
 
-GitHub's scheduler is best effort. Scheduled runs are frequently delayed, and
-under heavy platform load they can be skipped entirely. Expect 5 minutes
-typically and occasionally 15 to 30.
+The workflow used to run `--once` on a `*/5` cron. Measured over 36 hours of
+real runs on this repo, that delivered:
 
-For this bot that is acceptable, because the latency is dominated by how long
-it takes a sneaker site to publish the news, not by how often we poll. It
-would be a bad tradeoff for a bot watching a live stock endpoint. It is a
-reasonable one for a bot watching news.
+| | |
+|---|---|
+| Runs a perfect `*/5` would give | 415 |
+| Runs that actually happened | 68 |
+| Median gap between checks | 30 min |
+| p90 gap | 48 min |
+| Worst gap | 91 min |
 
-If a restock is announced and you want minute-accurate alerting, run the bot
-locally at the same time. Both can run at once, and they keep separate state,
-so the only cost is a duplicate email.
+66 of 67 gaps were over 15 minutes. GitHub's scheduler is best effort, it
+deprioritises high frequency schedules, and it was delivering about 16% of
+what the cron asked for. The old note here said "expect 5 minutes typically
+and occasionally 15 to 30", which was a guess and was wrong.
+
+The fix is not to ask harder. `*/5` is already GitHub's minimum. The fix is to
+stop depending on the scheduler: ask it for one job an hour, and let that job
+stay alive and do the polling itself.
+
+GitHub can delay *starting* a job, and clearly does. It cannot interrupt one
+that is already running. So the 5 minute sleep inside `restock_bot.py` runs on
+the runner's own clock and nothing can skip it. That turns 288 scheduler
+requests a day into 24, and everything in between is guaranteed.
+
+Net effect: roughly 11 checks an hour instead of 2, and the gaps that remain
+are at the predictable handoff at the top of each hour rather than scattered
+randomly.
+
+The job watches for 50 minutes, not 55, on purpose. If GitHub starts it late,
+it still finishes before the next hour's trigger, so the two never queue up
+behind the concurrency group.
+
+### What this costs
+
+The repo now uses about 20 hours a day of runner time instead of 5 minutes.
+That is free and within terms for a public repo, but it is a real step up in
+how much GitHub infrastructure a personal project is using. Worth knowing.
+
+### The failure mode
+
+Alerts email the moment they are found, mid-run. The state commit only happens
+when the job ends. So a job that crashes at minute 30 loses its dedup record
+and may re-send an alert next hour. The cost of a crash is a duplicate email,
+never a missed one, which is the right way round.
+
+A genuine crash fails the workflow loudly. Exit code 124 is `timeout` doing its
+job and is treated as success; anything else non-zero fails the run, so a dead
+watcher does not sit there looking healthy.
+
+### Proving the sender works
+
+The scheduled run never exercises email. State commits happen either way, and
+alerts only fire on a match. A dead `SMTP_PASSWORD` would look exactly like a
+healthy bot right up until the drop.
+
+So: Actions tab > "Yeezy restock watch" > Run workflow > mode `test-email`.
+That sends a test email using the real production secrets. Do it after any
+change to the secrets.
 
 ## Railway (alternative, needs a paid plan)
 
