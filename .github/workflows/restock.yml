@@ -6,6 +6,14 @@ on:
     # best effort: runs get delayed or skipped when the platform is busy.
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "check = look for a restock. test-email = prove the sender works."
+        type: choice
+        default: check
+        options:
+          - check
+          - test-email
 
 # Never let two checks overlap. Two runs racing would both read the same
 # seen.json and could send the same alert twice, or clash on the push.
@@ -32,7 +40,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Run the tests before the check. A broken regex would otherwise fail
+      # silently: the bot would look healthy in the logs and match nothing.
+      - name: Run tests
+        run: python test_matching.py
+
       - name: Check for a restock
+        if: inputs.mode != 'test-email'
         env:
           EMAIL_BACKEND: smtp
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -43,6 +57,20 @@ jobs:
           # Each run is a fresh machine, so anything not committed is lost.
           STATE_DIR: state
         run: python restock_bot.py --once
+
+      # The sender is the one part the scheduled run never exercises: state
+      # commits happen whether or not email works, and alerts only fire on a
+      # match. A dead SMTP password would look exactly like a healthy bot
+      # right up until the drop. Run this by hand to prove otherwise.
+      - name: Send a test email
+        if: inputs.mode == 'test-email'
+        env:
+          EMAIL_BACKEND: smtp
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: python restock_bot.py --test
 
       - name: Persist seen state
         run: |

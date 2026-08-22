@@ -103,46 +103,88 @@ SOLERETRIEVER_MAX_AGE_DAYS = 21
 # --------------------------------------------------------------------
 # MATCHING
 # --------------------------------------------------------------------
-# An item must mention Yeezy AND slides AND stock language to alert.
+# An item alerts if it mentions Yeezy AND slides. That is the whole gate.
+#
+# It used to also require stock language, and that was wrong. The drop is a
+# one-shot event, so a false negative costs the shoes while a false positive
+# costs one email. Measured against three weeks of live source data, the
+# Yeezy + slide test on its own let through exactly one article that was not
+# about availability (a YS-01 comparison piece), while the stock gate would
+# have silently dropped headlines like "Yeezy Slides Releasing Online At JD
+# Sports" and "Where To Buy The Yeezy Slide YS-01". Precision was not worth
+# buying at that price.
+#
+# Stock language still matters, but as a priority label in the subject line
+# rather than as a filter. See test_matching.py for the worked corpus.
 RE_YEEZY = re.compile(r"\byeezy\b|\bys-?01\b", re.I)
 RE_SLIDE = re.compile(r"\bslides?\b|\bys-?01\b", re.I)
-RE_STOCK = re.compile(r"restock|back in stock|drop|release|available|launch", re.I)
 RE_JD = re.compile(r"\bjd\b|jd sports|finish ?line", re.I)
+
+# Highest confidence: the item says stock is coming back.
+RE_RESTOCK = re.compile(
+    r"restock\w*|back in stock|in stock again|returns?\b|returning\b",
+    re.I,
+)
+# Still availability news, just less certain it is a restock as opposed to a
+# first release. "releas\w*" is deliberate: "release" does not match
+# "releasing", which is how the old gate lost half the plausible headlines.
+RE_AVAILABILITY = re.compile(
+    r"releas\w*|drop\w*|launch\w*|avail\w*|restock\w*|back in stock"
+    r"|where to buy|how to (?:buy|cop|get)|raffle|now live|goes? live"
+    r"|on sale|sells? out|sold out|sell-out|buy now|shop now|coming soon"
+    r"|hits? (?:shelves|stores|online)|online now|in stock",
+    re.I,
+)
 
 
 def score_item(title, summary=""):
-    """Return (should_alert, reason). Requires Yeezy + slide + stock language."""
+    """Return (should_alert, reason).
+
+    Alerts on any Yeezy slide item. The reason string carries the triage
+    signal: RESTOCK is the one to open first, JD SPORTS says it names the
+    retailer Patrick is actually buying from.
+    """
     text = "{} {}".format(title, summary)
     if not RE_YEEZY.search(text):
         return False, ""
     if not RE_SLIDE.search(text):
         return False, ""
-    if not RE_STOCK.search(text):
-        return False, ""
 
-    reason = "Yeezy slide stock news"
-    if RE_JD.search(text):
-        reason = "JD SPORTS Yeezy slide stock news"
-    if re.search(r"restock|back in stock", text, re.I):
-        reason = reason.replace("stock news", "RESTOCK")
-    return True, reason
+    if RE_RESTOCK.search(text):
+        tier = "RESTOCK"
+    elif RE_AVAILABILITY.search(text):
+        tier = "availability news"
+    else:
+        tier = "mention"
+
+    who = "JD SPORTS " if RE_JD.search(text) else ""
+    return True, "{}Yeezy slide {}".format(who, tier)
 
 
 # --------------------------------------------------------------------
 # STATE
 # --------------------------------------------------------------------
+# Seen keys are held in a dict used as an ordered set. A plain set would work
+# for the membership test, but set iteration order is arbitrary, so trimming
+# it to the newest N below would actually keep a random N and could let an
+# already-alerted article come back around and email twice. Dicts preserve
+# insertion order, so oldest really is at the front.
 def load_seen():
     if STATE_FILE.exists():
         try:
-            return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+            return dict.fromkeys(json.loads(STATE_FILE.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
-            return set()
-    return set()
+            return {}
+    return {}
+
+
+def mark_seen(seen, key):
+    seen[key] = None
 
 
 def save_seen(seen):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Keep the file from growing without bound.
+    # Keep the file from growing without bound. Oldest entries fall off first.
     trimmed = list(seen)[-500:]
     STATE_FILE.write_text(json.dumps(trimmed, indent=2), encoding="utf-8")
 
@@ -407,7 +449,17 @@ def send_email(subject, html_body):
 
 
 def alert(item, reason):
-    subject = "RESTOCK ALERT: {}".format(item["title"][:80])
+    # The subject line is the whole triage surface: it is what shows on a
+    # phone lock screen. Lead with the tier so a genuine restock is
+    # distinguishable from a Yeezy slide article at a glance.
+    jd = "JD " if "JD SPORTS" in reason else ""
+    if "RESTOCK" in reason:
+        prefix = "{}RESTOCK ALERT".format(jd)
+    elif "availability" in reason:
+        prefix = "{}Yeezy slide availability".format(jd)
+    else:
+        prefix = "Yeezy slide mention"
+    subject = "{}: {}".format(prefix, item["title"][:80])
     parts = [
         "<h2>{}</h2>".format(html.escape(item["title"])),
         "<p><b>Why you are getting this:</b> {}<br>".format(html.escape(reason)),
@@ -449,7 +501,7 @@ def check_once():
 
         log("  MATCH [{}] {}".format(reason, item["title"]))
         if alert(item, reason):
-            seen.add(item.get("key", item["link"]))
+            mark_seen(seen, item.get("key", item["link"]))
             hits += 1
 
     save_seen(seen)
@@ -465,7 +517,7 @@ def prime():
         return
     log("First run: priming state so you do not get blasted with old articles.")
     for item in gather_items():
-        seen.add(item.get("key", item["link"]))
+        mark_seen(seen, item.get("key", item["link"]))
     save_seen(seen)
     log("Primed with {} existing items. Watching for new ones from here.".format(len(seen)))
 

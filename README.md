@@ -38,13 +38,43 @@ disallows `/collections` and `/api`, which this bot never touches.
 
 ## Match rule
 
-An item alerts only if it mentions **Yeezy** *and* **slides** *and* stock
-language (restock, back in stock, drop, release, available, launch).
+An item alerts if it mentions **Yeezy** *and* **slides**. That is the whole
+gate. "Nike Dunk Restock" and "Yeezy 700 Release Date" are both correctly
+ignored, because neither is a Yeezy slide.
 
-This is deliberately narrow. "Nike Dunk Restock" and "Yeezy 700 Release Date"
-are both correctly ignored. Alerts mentioning JD or Finish Line are labelled
-`JD SPORTS`, and anything saying restock or back in stock is labelled
-`RESTOCK` so you can triage from the subject line.
+The rule used to also require stock language, and that was a mistake. This
+watcher exists for a one-shot event: a false negative costs the shoes, a
+false positive costs one email. Tested against three weeks of live source
+data, the Yeezy + slide test on its own let through exactly one article that
+was not about availability, while the stock gate silently dropped headlines
+like "Yeezy Slides Releasing Online At JD Sports" and "Where To Buy The Yeezy
+Slide YS-01". `"release"` does not match `"releasing"`, which is how half the
+plausible phrasings were being lost.
+
+Stock language still does work, as a triage label rather than a filter. The
+subject line leads with one of three tiers:
+
+| Subject prefix | Meaning |
+|---|---|
+| `JD RESTOCK ALERT` | Restock language *and* it names JD or Finish Line. Open this first. |
+| `RESTOCK ALERT` | Says restock, back in stock, returning. Some other retailer. |
+| `JD Yeezy slide availability` | Release, drop, launch, raffle, where to buy, goes live, sold out, at JD. |
+| `Yeezy slide availability` | Same, elsewhere. |
+| `Yeezy slide mention` | A Yeezy slide article with no availability language at all. |
+
+The prefix is the whole triage surface, because it is what shows on a phone
+lock screen without unlocking it.
+
+## Tests
+
+```bash
+python test_matching.py
+```
+
+Stdlib only, no pytest. It checks a corpus of 15 real-world drop phrasings
+that must alert and 8 noise headlines that must not, plus the tier labels,
+the subject lines and the seen-state trimming. Run it after touching the
+regexes. CI runs it on every push that is not a state commit.
 
 ## Setup
 
@@ -90,15 +120,14 @@ python restock_bot.py --no-prime   # alert on existing articles too
 
 ## Deploying 24/7
 
-**Railway**, same as your other bots. The `Procfile` declares a `worker`
-process. Set `SENDGRID_API_KEY`, `SENDER_EMAIL`, and `ALERT_EMAIL` as
-variables. Mount a volume and set `STATE_DIR=/data` so `seen.json` survives
-redeploys, otherwise the bot re-primes on every restart and you miss the
-window between restart and the next post.
+It is already deployed. **GitHub Actions** runs
+`restock_bot.py --once` on a `*/5` cron, and commits `state/seen.json` back to
+the repo so state survives between runs. Full detail, including why the repo
+has to be public and why that state commit is load bearing, is in
+[DEPLOY.md](DEPLOY.md).
 
-**Windows, no hosting.** Task Scheduler running
-`python restock_bot.py --once` every 5 minutes also works, since `--once` is
-stateless between runs and reads `seen.json` from disk.
+Railway is kept as a fallback (`railway.json`, `Procfile`, `.railwayignore`
+are all still configured) but the trial expired, so it now needs a paid plan.
 
 ## Also worth doing, and it takes 30 seconds
 
@@ -110,7 +139,10 @@ That comes straight from JD's own inventory system, so for the specific
 size and colorway you want it can beat the news cycle. This bot is the wider
 net that catches the announcement, the drop time, and the store list. Run both.
 
-## Status as of 2026-08-20
+## Status as of 2026-08-22
+
+Running on GitHub Actions, checking every 5 minutes, state committing back
+cleanly. Nothing has matched yet.
 
 A JD restock is confirmed but **in store only**, in limited quantities, with
 no announced date for an online drop. Soleretriever's wording is that an
