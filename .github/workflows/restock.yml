@@ -52,6 +52,31 @@ jobs:
       - name: Run tests
         run: python test_matching.py
 
+      # A watcher that cannot email is worse than no watcher: it reports
+      # success every hour while being incapable of telling you anything.
+      # That is exactly what this repo did until 2026-08-22, when the secrets
+      # turned out never to have been set. Fail loudly instead.
+      - name: Verify the sender is configured
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          missing=""
+          [ -z "$SMTP_USER" ]     && missing="$missing SMTP_USER"
+          [ -z "$SMTP_PASSWORD" ] && missing="$missing SMTP_PASSWORD"
+          [ -z "$ALERT_EMAIL" ]   && missing="$missing ALERT_EMAIL"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing"
+            echo ""
+            echo "This watcher cannot send email, so it cannot alert you."
+            echo "Set them under Settings > Secrets and variables > Actions."
+            echo "SMTP_PASSWORD must be a Google app password, not the"
+            echo "account password: https://myaccount.google.com/apppasswords"
+            exit 1
+          fi
+          echo "Sender configured. Alerts will go to a configured address."
+
       # Runs the bot's normal watch loop for 50 minutes, checking every 5,
       # then exits so the state file can be committed before the next hour's
       # job takes over. 50 rather than 55 leaves slack: if GitHub starts this
